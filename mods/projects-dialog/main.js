@@ -1,6 +1,6 @@
 // The projects sidebar's forms and right-click menus, chosen by props().mode:
 // newProject, renameProject, renameChat, newChat, addWorktree, promote,
-// spaceMenu, projectMenu, chatMenu.
+// spaceMenu, projectMenu, projectAdd, chatMenu.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Select, Popup } from "gpui-base";
@@ -260,6 +260,23 @@ export default class ProjectsDialog extends View {
     }
   }
 
+  // A plain shell in its own space, filed under the project. The menu stays open until
+  // the space is assigned: closing it would cancel this task and leave the space unfiled.
+  newTerminal(project, cx) {
+    if (this.busy) return;
+    this.busy = true;
+    cx.spawn(async () => {
+      try {
+        const made = await act("space.new", { name: "Terminal", folder: home(), machine: "" });
+        save((s) => ({ ...s, assign: { ...s.assign, [made.space]: project } }));
+        run("space.select", { id: made.space });
+      } catch (e) {
+        notify({ title: "Couldn't open a terminal", body: String(e?.message ?? e), level: "error" });
+      }
+      this.close();
+    });
+  }
+
   // A new worktree, its agent told what the chat found. The chat stays until closed:
   // agents keep a conversation per folder, so it can't move there itself.
   async promote(branch) {
@@ -421,9 +438,9 @@ export default class ProjectsDialog extends View {
     return v_flex().id("projects-menu").track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape") { this.close(); cx.stop_propagation(); } })
       .w_full().p(5).bg(t.popover).text_size(13).text_color(t.foreground)
-      .children(items.map(([text, action, muted], i) => h_flex().id(`item-${i}`).h(28).flex_none().px(9).items_center().rounded(6)
+      .children(items.map(([text, action, muted, closesItself], i) => h_flex().id(`item-${i}`).h(28).flex_none().px(9).items_center().rounded(6)
         .text_color(muted ? t.muted : t.foreground).hover((s) => s.bg(t.hover))
-        .on_click(() => { this.close(); action(); }).child(text)));
+        .on_click((_e, cx) => { if (!closesItself) this.close(); action(cx); }).child(text)));
   }
 
   open(mode, extra) {
@@ -463,6 +480,14 @@ export default class ProjectsDialog extends View {
     ]);
   }
 
+  projectAdd(t) {
+    const id = props().project;
+    return this.menu(t, [
+      ["New worktree…", () => this.open("addWorktree", { project: id })],
+      ["New terminal", (cx) => this.newTerminal(id, cx), false, true],
+    ]);
+  }
+
   chatMenu(t) {
     const id = props().space;
     return this.menu(t, [
@@ -477,6 +502,7 @@ export default class ProjectsDialog extends View {
     switch (this.mode) {
       case "spaceMenu": return this.spaceMenu(t);
       case "projectMenu": return this.projectMenu(t);
+      case "projectAdd": return this.projectAdd(t);
       case "chatMenu": return this.chatMenu(t);
       case "newProject":
         return this.form(t, "New project", "Create", [this.label(t, "Name"), this.field(t, this.input)]);
