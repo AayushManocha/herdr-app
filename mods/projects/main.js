@@ -1,5 +1,5 @@
-// Projects sidebar: exploratory chats, one scratch Terminals space, then spaces
-// grouped by project or by repo.
+// Projects sidebar: the PR Dashboard, one scratch Terminals space, exploratory chats,
+// then spaces grouped by project or by repo.
 // A project groups spaces (each usually one worktree), so one project can span
 // repos and one repo can serve several projects. The grouping is display state in
 // shared("projects"): removing it closes nothing. Dialogs live in projects-dialog.
@@ -252,9 +252,9 @@ export default class Projects extends View {
     if (narrow()) return this.rail(t, sp);
     const work = sp.filter((s) => !store.chats[s.id] && s.id !== store.terminals);
 
-    // agent.next and agent.prev follow the order shown: chats, Terminals, then the tree.
+    // agent.next and agent.prev follow the order shown: Terminals, chats, then the tree.
     const rank = new Map();
-    sp.filter((s) => store.chats[s.id]).concat(sp.filter((s) => s.id === store.terminals), work).forEach((s, i) => (s.tabs ?? []).forEach((c) => rank.set(c.id, i)));
+    sp.filter((s) => s.id === store.terminals).concat(sp.filter((s) => store.chats[s.id]), work).forEach((s, i) => (s.tabs ?? []).forEach((c) => rank.set(c.id, i)));
     setAgentOrder(agents().slice().sort((a, b) => (rank.get(a.tab) ?? 1e9) - (rank.get(b.tab) ?? 1e9)).map((a) => a.address));
 
     const seg = (id, text, on, lens) => div().id(id).h(22).px(8).flex().items_center().rounded(5).text_size(11.5)
@@ -262,20 +262,22 @@ export default class Projects extends View {
       .on_click((_e, cx) => this.setLens(lens, cx)).child(text);
 
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
-      .child(h_flex().flex_none().px(10).pb(8).gap(6)
-        .child(h_flex().id("new-chat").flex_1().h(32).gap(7).items_center().justify_center().rounded(8).border_1().border_color(t.input)
-          .font_medium().text_color(t.foreground).hover((st) => st.bg(t.hover))
-          .on_click(() => dialog("newChat"))
-          .child(svg(ICON("plus")).size(13)).child("New chat")))
-      .child(h_flex().id("pr-dashboard").h(30).flex_none().mx(10).mb(8).px(8).gap(8).items_center().rounded(7).text_color(t.muted)
-        .hover((st) => st.bg(t.hover).text_color(t.foreground))
-        .on_click(openPrDashboard)
-        .child(svg(PR_ICON).size(14)).child("PR Dashboard"))
       .child(v_flex().flex_1().min_h(0).px(8).pb(12).gap(10).overflow_y_scrollbar()
         .child(v_flex().flex_none().gap(1)
-          .child(div().px(8).py(4).text_size(11.5).font_medium().text_color(t.muted).child("Chats"))
+          .child(h_flex().id("pr-dashboard").h(30).flex_none().px(8).gap(8).items_center().rounded(7)
+            .hover((st) => st.bg(t.hover))
+            .on_click(openPrDashboard)
+            .child(svg(PR_ICON).size(14).flex_none().text_color(t.muted))
+            .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child("PR Dashboard")))
+          .child(this.terminalsRow(t, store, sp)))
+        .child(v_flex().flex_none().gap(1)
+          .child(h_flex().flex_none().pl(8).pr(4).gap(6).items_center()
+            .child(div().flex_1().min_w(0).py(4).text_size(11.5).font_medium().text_color(t.muted).child("Chats"))
+            .child(h_flex().id("new-chat").size(24).flex_none().items_center().justify_center().rounded(6).text_color(t.muted)
+              .hover((st) => st.bg(t.hover).text_color(t.foreground)).tooltip("New chat")
+              .on_click(() => dialog("newChat"))
+              .child(svg(ICON("plus")).size(13))))
           .children(this.chatRows(t, store, sp)))
-        .child(this.terminalsRow(t, store, sp))
         .child(div().h(1).flex_none().mx(4).bg(t.border))
         .child(h_flex().flex_none().pl(8).pr(4).gap(6).items_center()
           .child(h_flex().flex_none().gap(2).p(2).rounded(7).bg(t.surface)
