@@ -1,15 +1,15 @@
-// A full-window list of open pull requests, by Herdr project: title, CI, human review comments,
+// A full-window list of your open pull requests, by Herdr project: title, CI, human review comments,
 // and a description folded away. A PR's row opens it on GitHub; Esc goes back. The last answer
 // shows at once from the local cache while a spinner says a fresh one is on its way.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
-import { theme, exec, props, closeOverlay, notify, window, spaces } from "herdr";
+import { theme, exec, props, closeOverlay, notify, window, spaces, panes } from "herdr";
 import { fetchPullRequests, projectStore, resolveSpaceRepos } from "./github.js";
 import { projectGroups } from "./summary.js";
 
 const REFRESH_MS = 2 * 60 * 1000;
-const CACHE = "cache";
+const CACHE = "my-prs"; // "cache" held everyone's PRs; init drops it.
 const icon = (name) => `mods/pr-dashboard/${name}.svg`;
 const shared = (name) => `mods/workspace-chrome/${name}.svg`;
 
@@ -41,6 +41,7 @@ export default class PrDashboard extends View {
     this.loading = false;
     this.expanded = new Set();
     try {
+      localStorage.removeItem("cache");
       const saved = JSON.parse(localStorage.getItem(CACHE) ?? "null");
       if (saved) { this.prs = saved.prs; this.spaceRepos = saved.spaceRepos; this.fetchedAt = saved.at; }
     } catch {}
@@ -85,7 +86,7 @@ export default class PrDashboard extends View {
     return h_flex().h(46).flex_none().pl(macButtons ? 84 : 18).pr(12).gap(10).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(svg(icon("git-pull-request")).size(15).flex_none().text_color(t.muted))
       .child(div().flex_none().font_semibold().text_color(t.foreground).child("Pull requests"))
-      .when(this.prs !== null, (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(shown ? `${plural(shown, "open PR")} in ${plural(withPrs, "project")}` : "No open PRs")))
+      .when(this.prs !== null, (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(shown ? `${plural(shown, "open PR")} of yours in ${plural(withPrs, "project")}` : "No open PRs of yours")))
       .child(div().flex_1().min_w(0))
       .when(this.loading && this.prs !== null, (el) => el.child(h_flex().flex_none().gap(6).items_center().text_size(12).text_color(t.muted)
         .child(svg(shared("spinner")).size(13).spin(900)).child("Updating…")))
@@ -143,7 +144,7 @@ export default class PrDashboard extends View {
   }
 
   group(t, { project, repos, prs }) {
-    const note = !repos.length ? "No GitHub repository in this project" : !prs.length ? "No open pull requests" : "";
+    const note = !repos.length ? "No GitHub repository in this project" : !prs.length ? "None of your open pull requests are on this project's branches" : "";
     return v_flex().flex_none().gap(8)
       .child(h_flex().flex_none().gap(8).items_center().px(2)
         .child(div().size(9).flex_none().rounded(3).bg(project.color))
@@ -178,7 +179,7 @@ export default class PrDashboard extends View {
 
   render() {
     const t = theme();
-    const groups = projectGroups(projectStore(), spaces(), this.spaceRepos, this.prs ?? []);
+    const groups = projectGroups(projectStore(), spaces(), this.spaceRepos, this.prs ?? [], panes());
     return v_flex().size_full().min_h(0).bg(t.canvas).text_size(13)
       .child(this.header(t, groups))
       .child(this.content(t, groups));

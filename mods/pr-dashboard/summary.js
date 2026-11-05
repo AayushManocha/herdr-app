@@ -59,19 +59,27 @@ export function githubRepo(url) {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
-// What one Herdr project shows now: its live spaces' repos and those repos' PRs. A repo can serve
-// several projects, so its PRs show under each.
-export function projectGroups(store, spaces, spaceRepos, prs) {
+// Every branch checked out in a space: its terminals can be on different ones.
+function spaceBranches(space, panes) {
+  const tabs = new Set((space.tabs ?? []).map((tab) => tab.id));
+  return [space.branch, ...panes.filter((pane) => tabs.has(pane.tab)).map((pane) => pane.branch)].filter(Boolean);
+}
+
+// What one Herdr project shows now: its live spaces' repos, and the PRs whose head branch is checked
+// out in one of those spaces. A repo can serve several projects, so the branch says which one a PR
+// is for; a PR with no space left on its branch shows under none.
+export function projectGroups(store, spaces, spaceRepos, prs, panes = []) {
   return store.projects.map((project) => {
-    const repos = [...new Set(spaces
-      .filter((space) => store.assign[space.id] === project.id && !store.chats[space.id])
-      .map((space) => spaceRepos[space.id])
-      .filter(Boolean))].sort((a, b) => a.localeCompare(b));
-    const inProject = new Set(repos);
+    const inProject = spaces.filter((space) => store.assign[space.id] === project.id && !store.chats[space.id]);
+    const repos = [...new Set(inProject.map((space) => spaceRepos[space.id]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const checkedOut = new Set(inProject.flatMap((space) => {
+      const repo = spaceRepos[space.id];
+      return repo ? spaceBranches(space, panes).map((branch) => `${repo}\n${branch}`) : [];
+    }));
     return {
       project,
       repos,
-      prs: prs.filter((pr) => inProject.has(pr.source)).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)),
+      prs: prs.filter((pr) => checkedOut.has(`${pr.source}\n${pr.branch}`)).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)),
     };
   });
 }

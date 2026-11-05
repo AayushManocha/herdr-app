@@ -1,5 +1,5 @@
 // Finds the GitHub repositories behind the Herdr projects' spaces and asks GitHub, through the
-// person's own `gh` login, for those repositories' open PRs. Nothing else is queried.
+// person's own `gh` login, for the open PRs they wrote in those repositories. Nothing else is queried.
 
 import { exec, panes, shared, spaces } from "herdr";
 import { githubRepo, summarize } from "./summary.js";
@@ -66,11 +66,21 @@ export async function fetchPullRequests(repos) {
     const part = repos.slice(i, i + 50);
     const data = await graphql(`{ ${part.map((repo, j) => {
       const [owner, name] = repo.split("/");
-      return `r${j}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { pullRequests(states: OPEN, first: 100) { nodes { id } } }`;
+      return `r${j}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { nameWithOwner }`;
     }).join("\n")} }`, warnings);
-    part.forEach((repo, j) => {
-      if (!data[`r${j}`]) failed.add(repo);
-      for (const pr of data[`r${j}`]?.pullRequests.nodes ?? []) sourceOf.set(pr.id, repo);
+    // Search doesn't follow renames, so it needs the name GitHub answered with. Asking the server
+    // for the author also means a busy repo's other PRs can't crowd these out of a page.
+    const found = part.flatMap((repo, j) => {
+      if (data[`r${j}`]) return [{ repo, name: data[`r${j}`].nameWithOwner }];
+      failed.add(repo);
+      return [];
+    });
+    if (!found.length) continue;
+    const mine = await graphql(`{ ${found.map(({ name }, j) =>
+      `s${j}: search(type: ISSUE, first: 100, query: ${JSON.stringify(`is:pr is:open author:@me repo:${name}`)}) { nodes { ... on PullRequest { id } } }`).join("\n")} }`, warnings);
+    found.forEach(({ repo }, j) => {
+      if (!mine[`s${j}`]) failed.add(repo);
+      for (const pr of mine[`s${j}`]?.nodes ?? []) sourceOf.set(pr.id, repo);
     });
   }
 
