@@ -9,6 +9,7 @@ import { spaces, panes, agents, run, openOverlay, exec, theme, shared, layout, s
 
 const KEY = "projects";
 const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
+const PR_ICON = "mods/pr-dashboard/git-pull-request.svg";
 const CHATS_SHOWN = 3;
 
 const load = () => ({ projects: [], assign: {}, chats: {}, repos: [], ...(shared(KEY) ?? {}) });
@@ -43,6 +44,8 @@ function dialog(mode, extra = {}) {
 function menu(mode, extra = {}) {
   openOverlay({ mod: "projects-dialog", kind: "popup", width: 220, height: 260, props: { mode, ...extra } });
 }
+
+const openPrDashboard = () => run("mod.open", { name: "pr-dashboard" });
 
 // The status mark differs by shape as well as color.
 function dot(t, status) {
@@ -197,6 +200,10 @@ export default class Projects extends View {
 
   rail(t, sp) {
     return v_flex().size_full().min_h(0).bg(t.chrome).items_center().gap(2).py(6).overflow_y_scrollbar()
+      .child(h_flex().id("rail-pr-dashboard").h(26).w_full().flex_none().items_center().justify_center().text_color(t.muted)
+        .hover((st) => st.bg(t.hover).text_color(t.foreground)).tooltip("PR Dashboard")
+        .on_click(openPrDashboard)
+        .child(svg(PR_ICON).size(14)))
       .children(sp.map((s, i) => h_flex().id(`rail-${s.id}`).h(26).w_full().flex_none().gap(4).items_center().justify_center()
         .when(s.active, (el) => el.bg(t.raised)).hover((st) => st.bg(t.hover))
         .on_click(() => run("space.select", { id: s.id }))
@@ -227,6 +234,10 @@ export default class Projects extends View {
           .font_medium().text_color(t.foreground).hover((st) => st.bg(t.hover))
           .on_click(() => dialog("newChat"))
           .child(svg(ICON("plus")).size(13)).child("New chat")))
+      .child(h_flex().id("pr-dashboard").h(30).flex_none().mx(10).mb(8).px(8).gap(8).items_center().rounded(7).text_color(t.muted)
+        .hover((st) => st.bg(t.hover).text_color(t.foreground))
+        .on_click(openPrDashboard)
+        .child(svg(PR_ICON).size(14)).child("PR Dashboard"))
       .child(v_flex().flex_1().min_h(0).px(8).pb(12).gap(10).overflow_y_scrollbar()
         .child(v_flex().flex_none().gap(1)
           .child(div().px(8).py(4).text_size(11.5).font_medium().text_color(t.muted).child("Chats"))
