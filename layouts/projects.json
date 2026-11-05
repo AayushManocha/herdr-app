@@ -47,6 +47,16 @@
           }
         },
         {
+          "id": "usage",
+          "type": "block",
+          "size": {
+            "px": 52
+          },
+          "content": {
+            "mod": "usage-limits"
+          }
+        },
+        {
           "id": "sidebar-footer",
           "type": "block",
           "size": {
