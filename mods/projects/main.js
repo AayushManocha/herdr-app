@@ -42,8 +42,8 @@ const HEIGHT = { newChat: 330, newProject: 175, addWorktree: 345 };
 function dialog(mode, extra = {}) {
   openOverlay({ mod: "projects-dialog", kind: "dialog", width: 480, height: HEIGHT[mode] ?? 175, props: { mode, ...extra } });
 }
-function menu(mode, extra = {}) {
-  openOverlay({ mod: "projects-dialog", kind: "popup", width: 220, height: 260, props: { mode, ...extra } });
+function menu(mode, extra = {}, size = { width: 220, height: 260 }) {
+  openOverlay({ mod: "projects-dialog", kind: "popup", ...size, props: { mode, ...extra } });
 }
 
 const openPrDashboard = () => run("mod.open", { name: "pr-dashboard" });
@@ -210,8 +210,8 @@ export default class Projects extends View {
         .when(waiting > 0, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.blocked).child(`${waiting} waiting`)))
         .when(Boolean(project), (el) => el.child(h_flex().id(`add-${key}`).size(20).flex_none().items_center().justify_center().rounded(5).text_color(t.dim)
           .hover((st) => st.bg(t.raised).text_color(t.foreground))
-          .tooltip("Add worktree")
-          .on_click((_e, cx) => { cx.stop_propagation(); dialog("addWorktree", { project: project.id }); })
+          .tooltip("New worktree or terminal")
+          .on_click((_e, cx) => { cx.stop_propagation(); menu("projectAdd", { project: project.id }, { width: 170, height: 68 }); })
           .child(svg(ICON("plus")).size(12))))
         .child(svg(ICON(open ? "chevron-down" : "chevron-right")).size(11).flex_none().text_color(t.dim)))
       .when(open, (el) => el.children(list.length
