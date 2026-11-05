@@ -3,12 +3,13 @@
 // spaceMenu, projectMenu, chatMenu.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Select, Popup } from "gpui-base";
 import { run, props, closeOverlay, openOverlay, theme, shared, setShared, spaces, panes, exec, hc, home, knownAgents, pickFolder, notify } from "herdr";
 
 const KEY = "projects";
 const COLORS = ["#5b8def", "#d9649a", "#3fae6a", "#e3814f", "#8b7cf6", "#22a99a"];
 const TRANSCRIPT_LIMIT = 8000;
+const REPO_LIST_WIDTH = 442; // The trigger's width, measured; a popup can't take it by itself.
 
 // Chats promise read-only, so only agents with a read-only switch are offered.
 const READ_ONLY = { claude: ["--permission-mode", "plan"], codex: ["--sandbox", "read-only"] };
@@ -17,6 +18,8 @@ const load = () => ({ projects: [], assign: {}, chats: {}, repos: [], ...(shared
 const save = (change) => setShared(KEY, change(load()));
 const newId = (prefix) => `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 const slug = (branch) => branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+// The repo list is kept most recently used first.
+const usedRepo = (s, main) => ({ ...s, repos: [main, ...s.repos.filter((m) => m !== main)] });
 
 function addProject(name) {
   const id = newId("pj");
@@ -71,6 +74,10 @@ export default class ProjectsDialog extends View {
     this.agent = null;
     this.project = p.project ?? load().projects[0]?.id ?? null;
     this.handle = cx.focus_handle();
+    this.repoOpen = false;
+    this.repoAt = 0;
+    this.repoTrigger = cx.focus_handle();
+    this.repoList = cx.focus_handle();
 
     const store = load();
     const start = {
@@ -81,7 +88,7 @@ export default class ProjectsDialog extends View {
       this.input = InputState.new({ value: start, placeholder: this.placeholder() });
       this.input.on("submit", (_e, cx) => this.submit(cx));
       this.input.focus();
-      cx.timer.after(600, () => this.input.focus());
+      cx.timer.after(600, () => { if (!this.repoOpen) this.input.focus(); });
     }
     if (this.mode === "promote") {
       this.newName = InputState.new({ placeholder: "New project name" });
@@ -119,7 +126,7 @@ export default class ProjectsDialog extends View {
     }[this.mode];
   }
 
-  // Repos worth offering: ones open in a space, and ones chosen before.
+  // Repos worth offering, most recent first: ones chosen before, then ones open in a space.
   loadRepos(cx) {
     cx.spawn(async (cx) => {
       const found = new Map();
@@ -127,10 +134,10 @@ export default class ProjectsDialog extends View {
         if (!folder) return;
         try { const r = await repoOf(folder); if (r) found.set(r.main, r); } catch {}
       };
+      for (const main of load().repos) await add(main);
       const ps = panes();
       for (const s of spaces()) if (!s.machine) await add(place(s, ps));
-      for (const main of load().repos) await add(main);
-      this.repos = [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+      this.repos = [...found.values()];
       if (this.mode === "promote") {
         const from = load().chats[props().space]?.context;
         const own = from && this.repos.find((r) => r.main === from);
@@ -166,8 +173,8 @@ export default class ProjectsDialog extends View {
         cx.notify();
         return;
       }
-      save((s) => ({ ...s, repos: [...new Set([...s.repos, repo.main])] }));
-      this.repos = [...this.repos.filter((r) => r.main !== repo.main), repo].sort((a, b) => a.name.localeCompare(b.name));
+      save((s) => usedRepo(s, repo.main));
+      this.repos = [repo, ...this.repos.filter((r) => r.main !== repo.main)];
       if (single) this.picked = new Set([repo.main]);
       else this.picked.add(repo.main);
       this.error = "";
@@ -241,7 +248,7 @@ export default class ProjectsDialog extends View {
       try {
         const folder = await addWorktree(repo, branch);
         const made = await act("space.new", { folder, machine: "" });
-        save((s) => ({ ...s, assign: { ...s.assign, [made.space]: project }, repos: [...new Set([...s.repos, repo.main])] }));
+        save((s) => usedRepo({ ...s, assign: { ...s.assign, [made.space]: project } }, repo.main));
         last = made.space;
       } catch (e) { failed.push(`${repo.name}: ${e.message ?? e}`); }
     }
@@ -283,7 +290,7 @@ export default class ProjectsDialog extends View {
       : `Continue the exploratory chat titled "${chat?.title ?? ""}". You may now edit files in this worktree.`;
     const made = await act("space.new", { folder, tab: chat?.title ?? "session", argv: chat?.base ?? ["claude"], task, machine: "" });
     const projectId = this.creating ? addProject(project) : project;
-    save((s) => ({ ...s, assign: { ...s.assign, [made.space]: projectId }, repos: [...new Set([...s.repos, repo.main])] }));
+    save((s) => usedRepo({ ...s, assign: { ...s.assign, [made.space]: projectId } }, repo.main));
     run("space.select", { id: made.space });
     notify({ title: "Worktree created", body: `The chat "${chat?.title ?? ""}" is still open. Close it when you're done with it.`, level: "info" });
   }
@@ -320,6 +327,81 @@ export default class ProjectsDialog extends View {
     }));
     chips.push(this.chip(t, "repo-pick", this.mode === "newChat" ? "Choose a folder…" : "Choose a repo…", false, (_e, cx) => this.chooseFolder(cx, single)));
     return h_flex().flex_wrap().gap(6).children(chips);
+  }
+
+  setRepoOpen(open, cx) {
+    this.repoOpen = open;
+    if (open) { this.repoAt = 0; this.repoList.focus(); }
+    cx.notify();
+  }
+
+  // The row at this index: a repo, or past the last repo, the folder chooser.
+  activateRepoRow(i, cx) {
+    const r = this.repos[i];
+    if (!r) {
+      this.setRepoOpen(false, cx);
+      this.chooseFolder(cx, false);
+      return;
+    }
+    if (this.picked.has(r.main)) this.picked.delete(r.main);
+    else this.picked.add(r.main);
+    this.repoAt = i;
+    cx.notify();
+  }
+
+  repoKey(e, cx) {
+    const rows = this.repos.length + 1;
+    if (e.key === "down") this.repoAt = (this.repoAt + 1) % rows;
+    else if (e.key === "up") this.repoAt = (this.repoAt + rows - 1) % rows;
+    else if (e.key === "space") return this.activateRepoRow(this.repoAt, cx);
+    else return;
+    cx.notify();
+  }
+
+  // Select holds only the keyboard and the open state; the pointer is ours. A press on
+  // the trigger also counts as outside the list, so that case is left to the trigger.
+  repoSelect(t) {
+    const names = this.repos.filter((r) => this.picked.has(r.main)).map((r) => r.name);
+    const trigger = h_flex().id("repo-trigger").h(36).px(10).gap(8).items_center().rounded(9).border_1()
+      .border_color(this.repoOpen ? t.accent : t.input).bg(t.background).text_size(12.8).cursor_pointer()
+      .on_hover((over) => { this.overRepoTrigger = over; })
+      .on_click((_e, cx) => this.setRepoOpen(!this.repoOpen, cx))
+      .child(div().flex_1().min_w(0).truncate().text_color(names.length ? t.foreground : t.muted).child(names.join(", ") || "Select repos…"))
+      .child(div().flex_none().text_color(t.dim).child(this.repoOpen ? "▴" : "▾"));
+
+    const row = (key, i, content, on) => h_flex().id(key).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer()
+      .when(i === this.repoAt, (el) => el.bg(t.hover).aria_active_descendant())
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.activateRepoRow(i, cx))
+      .role("list_box_option").aria_selected(on)
+      .children(content);
+    const rows = this.repos.map((r, i) => {
+      const on = this.picked.has(r.main);
+      return row(`repo-${r.main}`, i, [
+        div().flex_none().w(14).text_color(t.accent).child(on ? "✓" : ""),
+        div().flex_none().text_color(t.foreground).child(r.name),
+        div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(r.main.replace(home(), "~")),
+      ], on);
+    });
+
+    const list = v_flex().id("repo-list").track_focus(this.repoList).w(REPO_LIST_WIDTH).mt(4).p(4).rounded(9).border_1()
+      .border_color(t.input).bg(t.popover).text_size(12.8)
+      .on_key_down((e, cx) => this.repoKey(e, cx))
+      .on_mouse_down_out((_e, cx) => { if (!this.overRepoTrigger) this.setRepoOpen(false, cx); })
+      .child(v_flex().id("repo-options").max_h(180).overflow_y_scrollbar().children(rows)
+        .when(!rows.length, (el) => el.child(div().p(8).text_color(t.dim).child("No recent repos yet."))))
+      .child(div().my(4).h(1).bg(t.border))
+      .child(row("repo-pick", this.repos.length, [
+        div().flex_none().w(14).text_color(t.dim).child("+"),
+        div().flex_1().text_color(t.muted).child("Choose a repo…"),
+      ], false));
+
+    return Select.new("repo-select").accessibility_label("Repos")
+      .open(this.repoOpen)
+      .track_focus(this.repoTrigger)
+      .content_focus_handle(this.repoList)
+      .on_open_change((open, cx) => this.setRepoOpen(open, cx))
+      .on_confirm((_e, cx) => this.activateRepoRow(this.repoAt, cx))
+      .child(Popup.new("repo-popup", trigger).anchor("top_left").when(this.repoOpen, (el) => el.content(list)));
   }
 
   form(t, title, submitLabel, body) {
@@ -418,7 +500,7 @@ export default class ProjectsDialog extends View {
         const name = load().projects.find((p) => p.id === props().project)?.name ?? "project";
         return this.form(t, `Add worktree to ${name}`, "Create", [
           this.label(t, "Repos"),
-          this.repoChips(t, false),
+          this.repoSelect(t),
           this.label(t, "Branch"),
           this.field(t, this.input),
           div().pt(8).text_size(12).text_color(t.dim).child("Each repo gets its own worktree on this branch."),
