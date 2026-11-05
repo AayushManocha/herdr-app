@@ -70,6 +70,14 @@ function duration(seconds) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+// Just the largest unit, so it fits under a 22px bar: "42m", "3h", "2d".
+function short(seconds) {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
+  return `${Math.floor(minutes / 1440)}d`;
+}
+
 export default class UsageLimits extends View {
   init(_props, cx) {
     this.sources = {};
@@ -99,11 +107,15 @@ export default class UsageLimits extends View {
     const color = pct >= DANGER ? t.blocked : pct >= WARN ? t.ansi3 : null;
     const tip = `${source.name} ${w.name} limit: ${pct}% used · resets in ${duration(w.resetsAt - now)}`
       + (source.updated ? ` · updated ${duration(now - source.updated)} ago` : "");
-    return h_flex().id(`usage-${source.name}-${w.label}`).gap(5).items_center().tooltip(tip)
-      .child(div().text_color(t.dim).child(w.label))
-      .child(div().w(22).h(4).rounded(2).bg(t.border).overflow_hidden()
-        .child(div().h_full().w(22 * Math.min(pct, 100) / 100).bg(color ?? t.muted)))
-      .child(div().w(30).text_color(color ?? t.muted).child(`${pct}%`));
+    return v_flex().id(`usage-${source.name}-${w.label}`).tooltip(tip)
+      .child(h_flex().gap(5).items_center()
+        .child(div().w(16).flex_shrink_0().whitespace_nowrap().text_color(t.dim).child(w.label))
+        .child(div().w(22).h(4).rounded(2).bg(t.border).overflow_hidden()
+          .child(div().h_full().w(22 * Math.min(pct, 100) / 100).bg(color ?? t.muted)))
+        .child(div().w(30).text_color(color ?? t.muted).child(`${pct}%`)))
+      // Under the bar: when this window empties again.
+      .child(div().pl(21).text_size(9.5).whitespace_nowrap().line_height("11px").text_color(t.dim)
+        .child(`↻ ${short(w.resetsAt - now)}`));
   }
 
   render() {
@@ -116,7 +128,7 @@ export default class UsageLimits extends View {
       .filter(({ windows }) => windows.length > 0);
     // A folded sidebar is a rail with no room for numbers.
     const visible = shown.length > 0 && (this.size?.width ?? Infinity) >= MIN_WIDTH;
-    return v_flex().id("root").size_full().px(16).gap(4).justify_center()
+    return v_flex().id("root").size_full().px(16).gap(6).justify_center()
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .bg(t.chrome).text_size(11.8)
       .when(visible, (el) => el.border_t(1).border_color(t.border)

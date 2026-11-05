@@ -50,7 +50,7 @@
           "id": "usage",
           "type": "block",
           "size": {
-            "px": 52
+            "px": 74
           },
           "content": {
             "mod": "usage-limits"
