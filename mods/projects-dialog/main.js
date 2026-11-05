@@ -89,6 +89,23 @@ export default class ProjectsDialog extends View {
     }
     if (["newChat", "addWorktree", "promote"].includes(this.mode)) this.loadRepos(cx);
     if (["newChat"].includes(this.mode)) this.loadAgents(cx);
+    if (this.mode === "spaceMenu") this.loadLinked(cx);
+  }
+
+  // Whether the space sits in a linked worktree: only those have their own git dir
+  // apart from the common one, so a repo's main checkout and a submodule don't count.
+  loadLinked(cx) {
+    const space = spaces().find((s) => s.id === props().space);
+    const folder = space && place(space, panes());
+    if (!folder) return;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], { cwd: folder, on: space.machine });
+        const [dir, common] = r.stdout.trim().split("\n");
+        this.linked = r.code === 0 && dir !== common;
+      } catch { this.linked = false; }
+      cx.notify();
+    });
   }
 
   placeholder() {
@@ -344,6 +361,9 @@ export default class ProjectsDialog extends View {
     })]);
     items.push(["New project…", () => this.open("newProject")]);
     items.push(["Space options…", () => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id } } }), true]);
+    // Last, so it appearing once git answers moves nothing under the pointer. The
+    // shipped dialog confirms it and warns about uncommitted or unpushed work.
+    if (this.linked) items.push(["Remove worktree…", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: id, action: "remove" } })]);
     return this.menu(t, items);
   }
 
