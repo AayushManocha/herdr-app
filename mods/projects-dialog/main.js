@@ -3,13 +3,15 @@
 // spaceMenu, projectMenu, projectAdd, chatMenu.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Select, Popup } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Select, Popup, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { run, props, closeOverlay, openOverlay, theme, shared, setShared, spaces, panes, exec, hc, home, knownAgents, pickFolder, notify } from "herdr";
 
 const KEY = "projects";
 const COLORS = ["#5b8def", "#d9649a", "#3fae6a", "#e3814f", "#8b7cf6", "#22a99a"];
 const TRANSCRIPT_LIMIT = 8000;
 const REPO_LIST_WIDTH = 442; // The trigger's width, measured; a popup can't take it by itself.
+const WORKTREE_ROW = 30;
+const WORKTREE_ROWS_SHOWN = 4; // What fits between the Branch field and the dialog's edge.
 
 // Chats promise read-only, so only agents with a read-only switch are offered.
 const READ_ONLY = { claude: ["--permission-mode", "plan"], codex: ["--sandbox", "read-only"] };
@@ -62,6 +64,34 @@ async function addWorktree(repo, branch) {
   return path;
 }
 
+// A repo's checkouts on a branch, the main one first: { path, branch, main }. Bare,
+// detached and missing ones can't be imported, so they're left out.
+async function checkouts(repo) {
+  const list = await git(repo.main, ["worktree", "list", "--porcelain"]);
+  if (!list.ok) return [];
+  const out = [];
+  list.out.split(/\n\n+/).forEach((block, i) => {
+    const lines = block.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice(9);
+    const branch = lines.find((l) => l.startsWith("branch "))?.slice(7).replace(/^refs\/heads\//, "");
+    if (path && branch && !lines.some((l) => l === "bare" || l.startsWith("prunable"))) out.push({ path, branch, main: i === 0 });
+  });
+  return out;
+}
+
+// The space already showing a checkout, if any: the first terminal is in it, and not in
+// a checkout nested deeper. Chats are left out: they can read a repo without being its work.
+function spaceOf(path, list) {
+  const inside = (p, dir) => p === dir || p.startsWith(`${dir}/`);
+  const chats = load().chats;
+  const ps = panes();
+  return spaces().find((s) => {
+    if (s.machine || chats[s.id]) return false;
+    const at = place(s, ps);
+    return at && inside(at, path) && !list.some((c) => c.path.length > path.length && inside(c.path, path) && inside(at, c.path));
+  });
+}
+
 export default class ProjectsDialog extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -78,6 +108,11 @@ export default class ProjectsDialog extends View {
     this.repoAt = 0;
     this.repoTrigger = cx.focus_handle();
     this.repoList = cx.focus_handle();
+    this.worktrees = new Map(); // repo main path -> its checkouts
+    this.branchOpen = false;
+    this.branchAt = -1; // -1: nothing highlighted, so Enter submits what was typed.
+    this.branchQuery = "";
+    this.branchScroll = VirtualListScrollHandle.new();
 
     const store = load();
     const start = {
@@ -86,7 +121,23 @@ export default class ProjectsDialog extends View {
     }[this.mode] ?? "";
     if (["newProject", "renameProject", "renameChat", "newChat", "addWorktree", "promote"].includes(this.mode)) {
       this.input = InputState.new({ value: start, placeholder: this.placeholder() });
-      this.input.on("submit", (_e, cx) => this.submit(cx));
+      this.input.on("submit", (_e, cx) => {
+        const row = this.branchOpen && this.branchRows()[this.branchAt];
+        if (row) this.pickWorktree(row, cx);
+        else this.submit(cx);
+      });
+      if (this.mode === "addWorktree") {
+        this.input.on("change", (_e, cx) => {
+          if (this.input.value() === this.branchFilled) return; // Our own set_value, not typing.
+          this.branchFilled = null;
+          this.branchQuery = this.input.value().trim();
+          this.branchAt = -1;
+          this.branchOpen = true;
+          cx.notify();
+        });
+        this.input.on("focus", () => { this.branchFocused = true; });
+        this.input.on("blur", () => { this.branchFocused = false; });
+      }
       this.input.focus();
       cx.timer.after(600, () => { if (!this.repoOpen) this.input.focus(); });
     }
@@ -121,7 +172,7 @@ export default class ProjectsDialog extends View {
       renameProject: "Project name",
       renameChat: "Chat title",
       newChat: "What do you want to explore?",
-      addWorktree: "Branch, like feat/priority-lanes",
+      addWorktree: "Existing worktree or new branch",
       promote: "New branch, like feat/priority-lanes",
     }[this.mode];
   }
@@ -144,6 +195,19 @@ export default class ProjectsDialog extends View {
         if (own) this.picked.add(own.main);
       }
       cx.notify();
+      this.loadWorktrees(cx);
+    });
+  }
+
+  // Only for offering them: submitting asks git again.
+  loadWorktrees(cx) {
+    if (this.mode !== "addWorktree") return;
+    cx.spawn(async (cx) => {
+      for (const repo of this.repos) {
+        if (this.worktrees.has(repo.main)) continue;
+        try { this.worktrees.set(repo.main, await checkouts(repo)); } catch { this.worktrees.set(repo.main, []); }
+        cx.notify();
+      }
     });
   }
 
@@ -179,6 +243,7 @@ export default class ProjectsDialog extends View {
       else this.picked.add(repo.main);
       this.error = "";
       cx.notify();
+      this.loadWorktrees(cx);
     });
   }
 
@@ -246,10 +311,13 @@ export default class ProjectsDialog extends View {
     let last = null;
     for (const repo of chosen) {
       try {
-        const folder = await addWorktree(repo, branch);
-        const made = await act("space.new", { folder, machine: "" });
-        save((s) => usedRepo({ ...s, assign: { ...s.assign, [made.space]: project } }, repo.main));
-        last = made.space;
+        // A branch already checked out is imported as it is: git wouldn't check it out twice.
+        const list = await checkouts(repo);
+        const existing = list.find((c) => c.branch === branch);
+        const open = existing && spaceOf(existing.path, list);
+        const space = open ? open.id : (await act("space.new", { folder: existing ? existing.path : await addWorktree(repo, branch), machine: "" })).space;
+        save((s) => usedRepo({ ...s, assign: { ...s.assign, [space]: project } }, repo.main));
+        last = space;
       } catch (e) { failed.push(`${repo.name}: ${e.message ?? e}`); }
     }
     if (last) run("space.select", { id: last });
@@ -348,8 +416,105 @@ export default class ProjectsDialog extends View {
 
   setRepoOpen(open, cx) {
     this.repoOpen = open;
-    if (open) { this.repoAt = 0; this.repoList.focus(); }
+    if (open) { this.repoAt = 0; this.repoList.focus(); this.branchOpen = false; }
     cx.notify();
+  }
+
+  // Existing worktrees the Branch field can offer: those of the chosen repos, or of every
+  // known repo before any is chosen, leaving out what's already in this project. With
+  // repos chosen, a branch several of them have is one row: picking it covers them all.
+  branchRows() {
+    const store = load();
+    const from = this.picked.size ? this.repos.filter((r) => this.picked.has(r.main)) : this.repos;
+    const query = this.branchQuery.toLowerCase();
+    const rows = [];
+    for (const repo of from) {
+      const list = this.worktrees.get(repo.main) ?? [];
+      for (const c of list) {
+        if (query && !c.branch.toLowerCase().includes(query)) continue;
+        const space = spaceOf(c.path, list);
+        const owner = space && store.assign[space.id];
+        if (owner && owner === props().project) continue;
+        const inProject = owner && store.projects.find((p) => p.id === owner)?.name;
+        const note = inProject ? `in ${inProject}` : space ? "open" : c.main ? "main checkout" : "";
+        const twin = this.picked.size && rows.find((r) => r.branch === c.branch);
+        if (twin) { twin.repos.push(repo); twin.note = ""; }
+        else rows.push({ key: `${repo.main}\n${c.branch}`, branch: c.branch, repos: [repo], note });
+      }
+    }
+    return rows;
+  }
+
+  setBranchOpen(open, cx) {
+    this.branchOpen = open;
+    this.branchAt = -1;
+    if (open) { this.branchQuery = ""; this.repoOpen = false; this.input.focus(); }
+    cx.notify();
+  }
+
+  pickWorktree(row, cx) {
+    if (!this.picked.size) this.picked.add(row.repos[0].main);
+    this.branchFilled = row.branch;
+    this.input.set_value(row.branch);
+    this.error = "";
+    this.input.focus();
+    this.setBranchOpen(false, cx);
+  }
+
+  branchKey(e, cx) {
+    if (e.key !== "down" && e.key !== "up") return;
+    const n = this.branchRows().length;
+    if (!this.branchOpen) { this.setBranchOpen(true, cx); return; }
+    if (!n) return;
+    const down = e.key === "down";
+    this.branchAt = this.branchAt < 0 ? (down ? 0 : n - 1) : (this.branchAt + (down ? 1 : n - 1)) % n;
+    this.branchScroll.scroll_to_item(this.branchAt);
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // The Branch field: free text, with existing worktrees to pick from underneath.
+  branchField(t) {
+    const rows = this.branchOpen ? this.branchRows() : [];
+    const shown = Math.min(rows.length, WORKTREE_ROWS_SHOWN);
+    const field = div().id("branch-field").relative().w_full()
+      .on_hover((over) => { this.overBranchField = over; })
+      .on_mouse_down("left", (_e, cx) => { if (!this.branchOpen) this.setBranchOpen(true, cx); })
+      .child(this.field(t, this.input))
+      .child(h_flex().id("branch-toggle").absolute().top(0).right(0).h(36).w(30).items_center().justify_center().cursor_pointer()
+        .text_color(t.dim)
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.setBranchOpen(!this.branchOpen, cx); })
+        .child(this.branchOpen ? "▴" : "▾"));
+    const list = v_flex().id("branch-list").w(REPO_LIST_WIDTH).mt(4).p(4).rounded(9).border_1()
+      .border_color(t.input).bg(t.popover).text_size(12.8)
+      .on_mouse_down_out((_e, cx) => { if (!this.overBranchField) this.setBranchOpen(false, cx); })
+      .child(v_flex().h(shown * WORKTREE_ROW).child(
+        v_virtual_list("branch-options", rows.length, WORKTREE_ROW, (i) => rows[i].key, (range) =>
+          rows.slice(range.start, range.end).map((r, offset) =>
+            h_flex().h(WORKTREE_ROW).px(8).gap(8).items_center().rounded(6).cursor_pointer()
+              .when(range.start + offset === this.branchAt, (el) => el.bg(t.hover))
+              .hover((s) => s.bg(t.hover))
+              .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.branch))
+              .child(div().flex_none().text_size(11.5).text_color(t.dim).child([r.repos.map((x) => x.name).join(", "), r.note].filter(Boolean).join(" · ")))))
+          .track_scroll(this.branchScroll)
+          .on_item_click((key, cx) => {
+            const row = this.branchRows().find((r) => r.key === key);
+            if (row) this.pickWorktree(row, cx);
+          })));
+    return Popup.new("branch-popup", field).anchor("top_left").when(rows.length > 0, (el) => el.content(list));
+  }
+
+  // What Create will do for the chosen repos, and the button that says so.
+  branchPlan() {
+    const branch = this.input.value().trim();
+    const chosen = this.repos.filter((r) => this.picked.has(r.main));
+    const has = (r) => (this.worktrees.get(r.main) ?? []).some((c) => c.branch === branch);
+    const names = (list) => list.map((r) => r.name).join(", ");
+    const existing = branch ? chosen.filter(has) : [];
+    const fresh = chosen.filter((r) => !existing.includes(r));
+    if (!existing.length) return { label: "Create", hint: "Pick an existing worktree to import it, or name a new branch." };
+    if (!fresh.length) return { label: "Import", hint: `Imports the existing worktree from ${names(existing)}.` };
+    return { label: "Create", hint: `Imports the existing worktree from ${names(existing)}; creates one in ${names(fresh)}.` };
   }
 
   // The row at this index: a repo, or past the last repo, the folder chooser.
@@ -423,7 +588,14 @@ export default class ProjectsDialog extends View {
 
   form(t, title, submitLabel, body) {
     return v_flex().id("projects-dialog").track_focus(this.handle)
-      .on_key_down((e, cx) => { if (e.key === "escape") { this.close(); cx.stop_propagation(); } })
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") {
+          // The open list goes first, so Esc doesn't lose what was typed.
+          if (this.branchOpen && this.branchRows().length) this.setBranchOpen(false, cx);
+          else this.close();
+          cx.stop_propagation();
+        } else if (this.branchFocused) this.branchKey(e, cx);
+      })
       .w_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
       .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(title))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
@@ -524,12 +696,13 @@ export default class ProjectsDialog extends View {
         ]);
       case "addWorktree": {
         const name = load().projects.find((p) => p.id === props().project)?.name ?? "project";
-        return this.form(t, `Add worktree to ${name}`, "Create", [
+        const plan = this.branchPlan();
+        return this.form(t, `Add worktree to ${name}`, plan.label, [
           this.label(t, "Repos"),
           this.repoSelect(t),
           this.label(t, "Branch"),
-          this.field(t, this.input),
-          div().pt(8).text_size(12).text_color(t.dim).child("Each repo gets its own worktree on this branch."),
+          this.branchField(t),
+          div().pt(8).text_size(12).text_color(t.dim).child(plan.hint),
         ]);
       }
       case "promote": {
