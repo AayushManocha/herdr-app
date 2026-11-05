@@ -13,9 +13,6 @@ const REPO_LIST_WIDTH = 442; // The trigger's width, measured; a popup can't tak
 const WORKTREE_ROW = 30;
 const WORKTREE_ROWS_SHOWN = 4; // What fits between the Branch field and the dialog's edge.
 
-// Chats promise read-only, so only agents with a read-only switch are offered.
-const READ_ONLY = { claude: ["--permission-mode", "plan"], codex: ["--sandbox", "read-only"] };
-
 const load = () => ({ projects: [], assign: {}, chats: {}, repos: [], ...(shared(KEY) ?? {}) });
 const save = (change) => setShared(KEY, change(load()));
 const newId = (prefix) => `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
@@ -171,7 +168,7 @@ export default class ProjectsDialog extends View {
       newProject: "Project name",
       renameProject: "Project name",
       renameChat: "Chat title",
-      newChat: "What do you want to explore?",
+      newChat: "Chat name, shown in the sidebar",
       addWorktree: "Existing worktree or new branch",
       promote: "New branch, like feat/priority-lanes",
     }[this.mode];
@@ -215,10 +212,10 @@ export default class ProjectsDialog extends View {
     cx.spawn(async (cx) => {
       try {
         const all = await knownAgents();
-        this.agents = all.filter((a) => a.installed && READ_ONLY[a.run?.[0]]);
+        this.agents = all.filter((a) => a.installed && a.run?.length);
         this.agent = this.agents[0] ?? null;
       } catch (e) { this.error = String(e.message ?? e); }
-      if (!this.agents.length && !this.error) this.error = "Chats need Claude Code or Codex, because they run read-only.";
+      if (!this.agents.length && !this.error) this.error = "No installed agent to chat with.";
       cx.notify();
     });
   }
@@ -284,7 +281,8 @@ export default class ProjectsDialog extends View {
     });
   }
 
-  async startChat(question) {
+  // The agent starts idle: the person types the first message and picks any mode themselves.
+  async startChat(name) {
     if (!this.agent) throw new Error("Choose an agent first.");
     const base = this.agent.run;
     let folder = [...this.picked][0] ?? null;
@@ -294,10 +292,8 @@ export default class ProjectsDialog extends View {
       const made = await exec("mkdir", ["-p", folder]);
       if (made.code !== 0) throw new Error(made.stderr || "Couldn't make the chat's folder.");
     }
-    const title = question ? question.slice(0, 48) : "New chat";
-    const args = { name: title, folder, tab: "chat", argv: [...base, ...READ_ONLY[base[0]]], machine: "" };
-    if (question) args.task = question;
-    const made = await act("space.new", args);
+    const title = name ? name.slice(0, 48) : "New chat";
+    const made = await act("space.new", { name: title, folder, tab: "chat", argv: base, machine: "" });
     save((s) => ({ ...s, chats: { ...s.chats, [made.space]: { title, at: Date.now(), base, context: [...this.picked][0] ?? null } } }));
     run("space.select", { id: made.space });
   }
@@ -684,15 +680,15 @@ export default class ProjectsDialog extends View {
         return this.form(t, "Rename chat", "Save", [this.label(t, "Title"), this.field(t, this.input)]);
       case "newChat":
         return this.form(t, "New chat", "Start chat", [
-          this.label(t, "Question (optional)"),
+          this.label(t, "Name (optional)"),
           this.field(t, this.input),
           this.label(t, "Agent"),
           h_flex().flex_wrap().gap(6).children(this.agents.map((a) => this.chip(t, `agent-${a.run[0]}`, a.name, this.agent === a, (_e, cx) => { this.agent = a; cx.notify(); }))),
           this.label(t, "Optional context"),
           this.repoChips(t, true),
           div().pt(12).text_size(12).text_color(t.dim).child(this.picked.size
-            ? "Runs read-only in that folder. No worktree is created."
-            : "Runs read-only in a scratch folder. No worktree is created."),
+            ? "Starts in that folder. No worktree is created."
+            : "Starts in a scratch folder. No worktree is created."),
         ]);
       case "addWorktree": {
         const name = load().projects.find((p) => p.id === props().project)?.name ?? "project";
