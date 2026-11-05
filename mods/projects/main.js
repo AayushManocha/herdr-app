@@ -1,11 +1,12 @@
-// Projects sidebar: exploratory chats, then spaces grouped by project or by repo.
+// Projects sidebar: exploratory chats, one scratch Terminals space, then spaces
+// grouped by project or by repo.
 // A project groups spaces (each usually one worktree), so one project can span
 // repos and one repo can serve several projects. The grouping is display state in
 // shared("projects"): removing it closes nothing. Dialogs live in projects-dialog.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, agents, run, openOverlay, exec, theme, shared, layout, setAgentOrder, nextCommand } from "herdr";
+import { spaces, panes, agents, run, openOverlay, exec, home, notify, theme, shared, setShared, layout, setAgentOrder, nextCommand } from "herdr";
 
 const KEY = "projects";
 const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
@@ -140,6 +141,38 @@ export default class Projects extends View {
     return rows;
   }
 
+  // One space for one-off commands. Its tabs and splits are the usual ones; closing
+  // its last tab closes it, and the next click starts it again.
+  openTerminals(existing, cx) {
+    if (existing) return run("space.select", { id: existing.id });
+    if (this.opening) return;
+    this.opening = true;
+    cx.spawn(async () => {
+      try {
+        // "herdr-app do" reports the id it made, which run() doesn't.
+        const args = { name: "Terminals", folder: home(), machine: "" };
+        const r = await exec("herdr-app", ["do", "space.new", JSON.stringify(args)]);
+        const made = JSON.parse(r.stdout);
+        if (r.code !== 0 || !made.space) throw new Error(made.error || r.stderr);
+        setShared(KEY, { ...load(), terminals: made.space });
+      } catch (e) {
+        notify({ title: "Couldn't open Terminals", body: String(e?.message ?? e), level: "error" });
+      }
+      this.opening = false;
+    });
+  }
+
+  terminalsRow(t, store, sp) {
+    const s = sp.find((x) => x.id === store.terminals);
+    return h_flex().id("terminals").h(30).flex_none().px(8).gap(8).items_center().rounded(7)
+      .when(Boolean(s?.active), (el) => el.bg(t.selected))
+      .when(!s?.active, (el) => el.hover((st) => st.bg(t.hover)))
+      .on_click((_e, cx) => this.openTerminals(s, cx))
+      .child(svg(ICON("terminal")).size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child("Terminals"))
+      .when(s?.status === "blocked" || s?.status === "working" || s?.status === "done", (el) => el.child(dot(t, s.status)));
+  }
+
   spaceRow(t, s, g, byProject, store, ps) {
     const repo = this.repoName(s, ps);
     const project = store.projects.find((p) => p.id === store.assign[s.id]);
@@ -217,11 +250,11 @@ export default class Projects extends View {
     const sp = spaces();
     const ps = panes();
     if (narrow()) return this.rail(t, sp);
-    const work = sp.filter((s) => !store.chats[s.id]);
+    const work = sp.filter((s) => !store.chats[s.id] && s.id !== store.terminals);
 
-    // agent.next and agent.prev follow the order shown: chats, then the tree.
+    // agent.next and agent.prev follow the order shown: chats, Terminals, then the tree.
     const rank = new Map();
-    sp.filter((s) => store.chats[s.id]).concat(work).forEach((s, i) => (s.tabs ?? []).forEach((c) => rank.set(c.id, i)));
+    sp.filter((s) => store.chats[s.id]).concat(sp.filter((s) => s.id === store.terminals), work).forEach((s, i) => (s.tabs ?? []).forEach((c) => rank.set(c.id, i)));
     setAgentOrder(agents().slice().sort((a, b) => (rank.get(a.tab) ?? 1e9) - (rank.get(b.tab) ?? 1e9)).map((a) => a.address));
 
     const seg = (id, text, on, lens) => div().id(id).h(22).px(8).flex().items_center().rounded(5).text_size(11.5)
@@ -242,6 +275,7 @@ export default class Projects extends View {
         .child(v_flex().flex_none().gap(1)
           .child(div().px(8).py(4).text_size(11.5).font_medium().text_color(t.muted).child("Chats"))
           .children(this.chatRows(t, store, sp)))
+        .child(this.terminalsRow(t, store, sp))
         .child(div().h(1).flex_none().mx(4).bg(t.border))
         .child(h_flex().flex_none().pl(8).pr(4).gap(6).items_center()
           .child(h_flex().flex_none().gap(2).p(2).rounded(7).bg(t.surface)
